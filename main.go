@@ -15,6 +15,7 @@ import (
 	"encoding/json"
 	"flag"
 	"fmt"
+	"io/fs"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -66,6 +67,7 @@ func main() {
 		extFlag    string
 		mp3Flag    bool
 		configFlag string
+		recursive  bool
 	)
 
 	flag.StringVar(&formatFlag, "f", "", "filename template (default: "+defaultFormat+")")
@@ -76,9 +78,11 @@ func main() {
 	flag.BoolVar(&mp3Flag, "mp3", false, "shorthand for --ext mp3")
 	flag.StringVar(&configFlag, "c", "", "config file path")
 	flag.StringVar(&configFlag, "config", "", "config file path")
+	flag.BoolVar(&recursive, "r", false, "recurse into subdirectories")
+	flag.BoolVar(&recursive, "recursive", false, "recurse into subdirectories")
 
 	flag.Usage = func() {
-		fmt.Fprintf(os.Stderr, "Usage: %s [-f|--format TEMPLATE] [-e|--ext EXT] [-m|--mp3] [-c|--config FILE] [DIR]\n\n", filepath.Base(os.Args[0]))
+		fmt.Fprintf(os.Stderr, "Usage: %s [-f|--format TEMPLATE] [-e|--ext EXT] [-m|--mp3] [-r|--recursive] [-c|--config FILE] [DIR]\n\n", filepath.Base(os.Args[0]))
 		fmt.Fprintf(os.Stderr, "Renames audio files using a filename template.\n\n")
 		fmt.Fprintf(os.Stderr, "Placeholders: <artist>, <album>, <track_number> (alias <track>), <song> (alias <title>), <disc>\n")
 		fmt.Fprintf(os.Stderr, "Config file (optional): %s\n\n", defaultConfigPath())
@@ -124,7 +128,7 @@ func main() {
 		dir = flag.Arg(0)
 	}
 
-	entries, err := os.ReadDir(dir)
+	paths, err := collectAudioFiles(dir, ext, recursive)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "error: %v\n", err)
 		os.Exit(1)
@@ -133,12 +137,7 @@ func main() {
 	var songs []song
 	albums := map[string]*albumInfo{}
 
-	for _, e := range entries {
-		if e.IsDir() || !strings.HasSuffix(strings.ToLower(e.Name()), "."+ext) {
-			continue
-		}
-		path := filepath.Join(dir, e.Name())
-
+	for _, path := range paths {
 		tags, err := probeTags(path)
 		if err != nil {
 			fmt.Fprintf(os.Stderr, "skip (probe failed): %s: %v\n", path, err)
@@ -148,7 +147,7 @@ func main() {
 		artist := firstTag(tags, "artist", "artists", "album_artist", "albumartist")
 		album := firstTag(tags, "album")
 		if album == "" {
-			album = filepath.Base(dir)
+			album = filepath.Base(filepath.Dir(path))
 		}
 		title := firstTag(tags, "title")
 		track := parseNum(firstTag(tags, "track", "tracknumber"))
@@ -203,7 +202,9 @@ func main() {
 
 		name := renderFormat(format, s, nn)
 		name = strings.ReplaceAll(name, "/", "-")
-		newPath := filepath.Join(dir, name+"."+ext)
+		// Always rename next to the file itself, so a recursive run keeps each
+		// album in its own directory.
+		newPath := filepath.Join(filepath.Dir(s.path), name+"."+ext)
 
 		switch {
 		case newPath == s.path:
@@ -218,6 +219,49 @@ func main() {
 			fmt.Printf("renamed: %s -> %s\n", filepath.Base(s.path), filepath.Base(newPath))
 		}
 	}
+}
+
+// collectAudioFiles returns the paths of audio files directly inside dir, or of
+// every audio file below dir when recursive is set. Directory entries are walked
+// lexically, so results are deterministic; symlinked directories are not followed.
+func collectAudioFiles(dir, ext string, recursive bool) ([]string, error) {
+	if !recursive {
+		entries, err := os.ReadDir(dir)
+		if err != nil {
+			return nil, err
+		}
+		var paths []string
+		for _, e := range entries {
+			if e.IsDir() || !strings.HasSuffix(strings.ToLower(e.Name()), "."+ext) {
+				continue
+			}
+			paths = append(paths, filepath.Join(dir, e.Name()))
+		}
+		return paths, nil
+	}
+
+	var paths []string
+	err := filepath.WalkDir(dir, func(path string, d fs.DirEntry, err error) error {
+		if err != nil {
+			if path == dir {
+				return err
+			}
+			fmt.Fprintf(os.Stderr, "skip (walk failed): %s: %v\n", path, err)
+			if d != nil && d.IsDir() {
+				return fs.SkipDir
+			}
+			return nil
+		}
+		if d.IsDir() || !strings.HasSuffix(strings.ToLower(d.Name()), "."+ext) {
+			return nil
+		}
+		paths = append(paths, path)
+		return nil
+	})
+	if err != nil {
+		return nil, err
+	}
+	return paths, nil
 }
 
 // renderFormat substitutes <placeholder> tokens in the template.

@@ -312,3 +312,109 @@ func TestFirstTag(t *testing.T) {
 		t.Fatalf("firstTag missing = %q, want empty", got)
 	}
 }
+
+func TestCollectAudioFiles(t *testing.T) {
+	root := t.TempDir()
+
+	mk := func(rel string) string {
+		path := filepath.Join(root, filepath.FromSlash(rel))
+		if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+			t.Fatalf("mkdir %s: %v", rel, err)
+		}
+		if err := os.WriteFile(path, nil, 0o644); err != nil {
+			t.Fatalf("write %s: %v", rel, err)
+		}
+		return path
+	}
+
+	a := mk("a.flac")
+	mk("b.mp3")
+	mk("notes.txt")
+	mk("a.flac.bak")
+	mk("E.FLAC")
+	c := mk("sub/c.flac")
+	d := mk("sub/deep/d.flac")
+
+	t.Run("non-recursive sees only the top level", func(t *testing.T) {
+		got, err := collectAudioFiles(root, "flac", false)
+		if err != nil {
+			t.Fatalf("collectAudioFiles: %v", err)
+		}
+		want := []string{filepath.Join(root, "E.FLAC"), a}
+		if !equalPaths(got, want) {
+			t.Fatalf("got %v, want %v", got, want)
+		}
+	})
+
+	t.Run("recursive walks the whole tree", func(t *testing.T) {
+		got, err := collectAudioFiles(root, "flac", true)
+		if err != nil {
+			t.Fatalf("collectAudioFiles: %v", err)
+		}
+		want := []string{filepath.Join(root, "E.FLAC"), a, c, d}
+		if !equalPaths(got, want) {
+			t.Fatalf("got %v, want %v", got, want)
+		}
+	})
+
+	t.Run("recursive filters by extension", func(t *testing.T) {
+		got, err := collectAudioFiles(root, "mp3", true)
+		if err != nil {
+			t.Fatalf("collectAudioFiles: %v", err)
+		}
+		want := []string{filepath.Join(root, "b.mp3")}
+		if !equalPaths(got, want) {
+			t.Fatalf("got %v, want %v", got, want)
+		}
+	})
+
+	t.Run("empty directory yields nothing", func(t *testing.T) {
+		empty := t.TempDir()
+		for _, rec := range []bool{false, true} {
+			got, err := collectAudioFiles(empty, "flac", rec)
+			if err != nil {
+				t.Fatalf("collectAudioFiles(recursive=%v): %v", rec, err)
+			}
+			if len(got) != 0 {
+				t.Fatalf("recursive=%v: expected no files, got %v", rec, got)
+			}
+		}
+	})
+
+	t.Run("missing directory is an error in both modes", func(t *testing.T) {
+		missing := filepath.Join(root, "nope")
+		for _, rec := range []bool{false, true} {
+			if _, err := collectAudioFiles(missing, "flac", rec); err == nil {
+				t.Fatalf("recursive=%v: expected error for missing dir", rec)
+			}
+		}
+	})
+
+	t.Run("symlinked directories are not followed", func(t *testing.T) {
+		link := filepath.Join(root, "link")
+		if err := os.Symlink(filepath.Join(root, "sub"), link); err != nil {
+			t.Skipf("symlinks unavailable: %v", err)
+		}
+		got, err := collectAudioFiles(root, "flac", true)
+		if err != nil {
+			t.Fatalf("collectAudioFiles: %v", err)
+		}
+		for _, p := range got {
+			if strings.HasPrefix(p, link+string(filepath.Separator)) {
+				t.Fatalf("walk followed symlinked directory: %s", p)
+			}
+		}
+	})
+}
+
+func equalPaths(got, want []string) bool {
+	if len(got) != len(want) {
+		return false
+	}
+	for i := range got {
+		if got[i] != want[i] {
+			return false
+		}
+	}
+	return true
+}

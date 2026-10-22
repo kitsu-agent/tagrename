@@ -41,11 +41,13 @@ yourself: `install -m 0755 tagrename /usr/local/bin/`.
 ## Usage
 
 ```
-tagrename [-f|--format TEMPLATE] [-e|--ext EXT] [-m|--mp3] [-c|--config FILE] [DIR]
+tagrename [-f|--format TEMPLATE] [-e|--ext EXT] [-m|--mp3] [-r|--recursive] [-c|--config FILE] [DIR]
 ```
 
 `DIR` defaults to the current directory. Every file in that directory whose extension
-matches the selected audio extension is probed and renamed.
+matches the selected audio extension is probed and renamed. With `-r/--recursive`, every
+matching file in the tree below `DIR` is processed instead, each renamed inside its own
+folder.
 
 ### Examples
 
@@ -62,6 +64,9 @@ tagrename -f '<track_number> - <song>' ~/Music/Album
 
 # Per-disc folders, disc number in the name
 tagrename -f '<disc>-<track_number> <song>' ~/Music/Album
+
+# Whole library: every album below ~/Music, each renamed in place
+tagrename -r ~/Music
 ```
 
 ## Placeholders
@@ -144,7 +149,13 @@ Tag names are matched case-insensitively.
 - Because of the two rules above, running tagrename twice is safe: the second run renames
   nothing. It is idempotent.
 - `/` in a rendered name is replaced with `-`, since it cannot appear in a filename.
-- Only files directly in `DIR` are touched. Subdirectories are not recursed into.
+- Files are renamed inside their own directory. Without `-r`, only files directly in
+  `DIR` are touched; with `-r`, the whole tree below `DIR` is walked and every album is
+  renamed where it lives. Multi-disc detection still groups by artist + album, so the
+  numbers stay consistent across the discs of one release wherever they sit.
+- `-r` follows real directories only; symlinked directories are not descended into.
+- An unreadable subdirectory is reported on stderr and skipped; the rest of the run
+  continues. A missing or unreadable `DIR` itself is a fatal error.
 
 ## License
 
